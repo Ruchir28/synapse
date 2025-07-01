@@ -1,3 +1,5 @@
+use crate::NDArrayError;
+use std::ops::{Add, Div, Mul, Sub};
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -127,6 +129,61 @@ impl<T> NDArray<T> {
         }
     }
 
+    pub fn try_add(&self, rhs: &NDArray<T>) -> Result<NDArray<T>, NDArrayError>
+    where
+        T: Add<Output = T> + Copy,
+    {
+        if self.dims() != rhs.dims() {
+            return Err(NDArrayError::DimensionMismatch {
+                expected: self.dims().to_vec(),
+                found: rhs.dims().to_vec(),
+            });
+        }
+        let result_data: Vec<T> = self.iter().zip(rhs.iter()).map(|(a, b)| *a + *b).collect();
+        Ok(NDArray::new(result_data, self.dims().to_vec()))
+    }
+
+    pub fn try_sub(&self, rhs: &NDArray<T>) -> Result<NDArray<T>, NDArrayError>
+    where
+        T: Sub<Output = T> + Copy,
+    {
+        if self.dims() != rhs.dims() {
+            return Err(NDArrayError::DimensionMismatch {
+                expected: self.dims().to_vec(),
+                found: rhs.dims().to_vec(),
+            });
+        }
+        let result_data: Vec<T> = self.iter().zip(rhs.iter()).map(|(a, b)| *a - *b).collect();
+        Ok(NDArray::new(result_data, self.dims().to_vec()))
+    }
+
+    pub fn try_mul(&self, rhs: &NDArray<T>) -> Result<NDArray<T>, NDArrayError>
+    where
+        T: Mul<Output = T> + Copy,
+    {
+        if self.dims() != rhs.dims() {
+            return Err(NDArrayError::DimensionMismatch {
+                expected: self.dims().to_vec(),
+                found: rhs.dims().to_vec(),
+            });
+        }
+        let result_data: Vec<T> = self.iter().zip(rhs.iter()).map(|(a, b)| *a * *b).collect();
+        Ok(NDArray::new(result_data, self.dims().to_vec()))
+    }
+
+    pub fn try_div(&self, rhs: &NDArray<T>) -> Result<NDArray<T>, NDArrayError>
+    where
+        T: Div<Output = T> + Copy,
+    {
+        if self.dims() != rhs.dims() {
+            return Err(NDArrayError::DimensionMismatch {
+                expected: self.dims().to_vec(),
+                found: rhs.dims().to_vec(),
+            });
+        }
+        let result_data: Vec<T> = self.iter().zip(rhs.iter()).map(|(a, b)| *a / *b).collect();
+        Ok(NDArray::new(result_data, self.dims().to_vec()))
+    }
 }
 
 #[derive(Debug)]
