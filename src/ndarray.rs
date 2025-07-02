@@ -115,6 +115,10 @@ impl<T> NDArray<T> {
         NdArrayIter { array: self, current_index: vec![0;self.dims.len()], finished: self.dims.iter().product::<usize>() == 0}
     }
 
+    pub fn indexed_iter(&self) -> NdArrayIndexedIter<T> {
+        NdArrayIndexedIter { array: self, current_index: vec![0;self.dims().len()], finished: self.dims().iter().product::<usize>() == 0}
+    }
+
     pub(crate) fn from_parts(
         data: Arc<Vec<T>>,
         dims: Vec<usize>,
@@ -184,6 +188,7 @@ impl<T> NDArray<T> {
         let result_data: Vec<T> = self.iter().zip(rhs.iter()).map(|(a, b)| *a / *b).collect();
         Ok(NDArray::new(result_data, self.dims().to_vec()))
     }
+
 }
 
 #[derive(Debug)]
@@ -218,4 +223,43 @@ impl<'a, T> Iterator for NdArrayIter<'a, T> {
 
         return Some(item);
     }
+}
+
+#[derive(Debug)]
+pub struct NdArrayIndexedIter<'a, T> {
+    array: &'a NDArray<T>,
+    current_index: Vec<usize>,
+    finished: bool
+}
+
+impl<'a, T> Iterator for NdArrayIndexedIter<'a,T> {
+
+    type Item = (Vec<usize>, &'a T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        
+        if self.finished {
+            return None;
+        }
+
+        let index_to_return = self.current_index.clone();
+        let item = self.array.get(&self.current_index).unwrap();
+
+        // The "odometer" logic to increment the index remains the same
+        for dim_index in (0..self.current_index.len()).rev() {
+            self.current_index[dim_index] += 1;
+            if self.current_index[dim_index] < self.array.dims()[dim_index] {
+                // Return the index we saved earlier, along with the item
+                return Some((index_to_return, item));
+            }
+            self.current_index[dim_index] = 0;
+        }
+
+        self.finished = true;
+
+        // Return the last item
+        Some((index_to_return, item))
+
+    }
+
 }
