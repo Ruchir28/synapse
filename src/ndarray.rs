@@ -58,8 +58,6 @@ impl<T> NDArray<T> {
             return None;
         }
 
-
-
         return self.data.get(data_index);
     }
     
