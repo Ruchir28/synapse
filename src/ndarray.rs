@@ -10,6 +10,19 @@ pub struct NDArray<T> {
     offset: usize,
 }
 
+// The Clone implementation for NDArray is cheap because the data is stored in an Arc.
+// It just creates a new view pointing to the same underlying data.
+impl<T> Clone for NDArray<T> {
+    fn clone(&self) -> Self {
+        Self {
+            data: Arc::clone(&self.data),
+            dims: self.dims.clone(),
+            strides: self.strides.clone(),
+            offset: self.offset,
+        }
+    }
+}
+
 impl<T> NDArray<T> {
     pub fn new(data: Vec<T>, dims: Vec<usize>) -> Self {
         if data.len() != dims.iter().product() {
@@ -129,6 +142,29 @@ impl<T> NDArray<T> {
             strides,
             offset,
         }
+    }
+    pub fn is_contiguous(&self) -> bool {
+        if self.offset != 0 {
+            return false;
+        }
+        if self.dims.iter().product::<usize>() != self.data.len() {
+            return false;
+        }
+        let standard_strides = Self::calculate_strides(&self.dims);
+        self.strides == standard_strides
+    }
+
+    pub fn to_contiguous(&self) -> Self
+    where
+        T: Clone,
+    {
+        if self.is_contiguous() {
+            return self.clone();
+        }
+
+        let new_data: Vec<T> = self.iter().cloned().collect();
+
+        NDArray::new(new_data, self.dims.clone())
     }
 
     pub fn try_add(&self, rhs: &NDArray<T>) -> Result<NDArray<T>, NDArrayError>
@@ -260,4 +296,69 @@ impl<'a, T> Iterator for NdArrayIndexedIter<'a,T> {
 
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ops::{SliceOps, TransformOps};
+    use super::*;
+
+#[test]
+fn test_is_contiguous() {
+        let a = NDArray::new(vec![1, 2, 3, 4], vec![2, 2]);
+        assert!(a.is_contiguous());
+
+        let b = a.permute_axis(&[1, 0]); // Transpose
+        assert!(!b.is_contiguous());
+
+        let c = a.slice(&[0..1, 0..2]); // Slice
+        assert!(!c.is_contiguous());
+    }
+
+    #[test]
+fn test_to_contiguous_from_view() {
+        let a = NDArray::new((0..9).collect(), vec![3, 3]);
+        let b = a.permute_axis(&[1, 0]); // Transposed view
+        assert!(!b.is_contiguous());
+
+        // Get a value from the view to make sure it's correct before copy
+        assert_eq!(b.get(&[0, 1]), Some(&3)); // B[0,1] is A[1,0]
+
+        let c = b.to_contiguous();
+        assert!(c.is_contiguous());
+
+        // Check that the data in C is the transposed data
+        let expected_data: Vec<i32> = vec![0, 3, 6, 1, 4, 7, 2, 5, 8];
+        assert_eq!(c.data().as_ref(), &expected_data);
+        assert_eq!(c.dims(), &[3, 3]);
+
+        // Check that the original array is untouched
+        assert_eq!(a.data().as_ref(), &(0..9).collect::<Vec<i32>>());
+    }
+
+    #[test]
+fn test_to_contiguous_from_slice() {
+        let array = NDArray::new((0..25).collect(), vec![5, 5]);
+        let view = array.slice(&[1..4, 1..4]); // 3x3 view, offset 6
+        assert!(!view.is_contiguous());
+
+        assert_eq!(view.get(&[0, 0]), Some(&6));
+        assert_eq!(view.get(&[2, 2]), Some(&18));
+
+        let contiguous_view = view.to_contiguous();
+        assert!(contiguous_view.is_contiguous());
+        assert_eq!(contiguous_view.dims(), &[3, 3]);
+
+        // Check the data is now dense
+        let expected_data: Vec<i32> = vec![
+            6, 7, 8,
+            11, 12, 13,
+            16, 17, 18
+        ];
+        assert_eq!(contiguous_view.data().as_ref(), &expected_data);
+
+        // Check that getting an element from the new array works
+        assert_eq!(contiguous_view.get(&[0, 0]), Some(&6));
+        assert_eq!(contiguous_view.get(&[2, 2]), Some(&18));
+    }
 }
