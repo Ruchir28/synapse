@@ -94,6 +94,10 @@ impl<T> NDArray<T> {
         &self.data
     }
 
+    pub fn data_mut(&mut self) -> &mut Vec<T>  {
+        Arc::get_mut(&mut self.data).expect("Data is not mutable")
+    }
+
     pub fn get_mut(&mut self, index: &[usize]) -> Option<&mut T> {
         if index.len() != self.dims.len() {
             return None;
