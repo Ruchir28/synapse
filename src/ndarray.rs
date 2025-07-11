@@ -1,4 +1,4 @@
-use crate::NDArrayError;
+use crate::{ops::broadcast::broadcast_shapes, NDArrayError};
 use std::ops::{Add, Div, Mul, Sub};
 use std::sync::Arc;
 
@@ -175,56 +175,96 @@ impl<T> NDArray<T> {
     where
         T: Add<Output = T> + Copy,
     {
-        if self.dims() != rhs.dims() {
-            return Err(NDArrayError::DimensionMismatch {
-                expected: self.dims().to_vec(),
-                found: rhs.dims().to_vec(),
-            });
-        }
-        let result_data: Vec<T> = self.iter().zip(rhs.iter()).map(|(a, b)| *a + *b).collect();
-        Ok(NDArray::new(result_data, self.dims().to_vec()))
+        let info = broadcast_shapes(self.dims(), rhs.dims(), self.strides(), rhs.strides())?;
+
+        let a_view = NDArray::from_parts(
+            self.data.clone(),
+            info.result_shape.clone(),
+            info.a_strides,
+            self.offset,
+        );
+
+        let b_view = NDArray::from_parts(
+            rhs.data.clone(),
+            info.result_shape.clone(),
+            info.b_strides,
+            rhs.offset,
+        );
+
+        let result_data: Vec<T> = a_view.iter().zip(b_view.iter()).map(|(a, b)| *a + *b).collect();
+        Ok(NDArray::new(result_data, info.result_shape))
     }
 
     pub fn try_sub(&self, rhs: &NDArray<T>) -> Result<NDArray<T>, NDArrayError>
     where
         T: Sub<Output = T> + Copy,
     {
-        if self.dims() != rhs.dims() {
-            return Err(NDArrayError::DimensionMismatch {
-                expected: self.dims().to_vec(),
-                found: rhs.dims().to_vec(),
-            });
-        }
-        let result_data: Vec<T> = self.iter().zip(rhs.iter()).map(|(a, b)| *a - *b).collect();
-        Ok(NDArray::new(result_data, self.dims().to_vec()))
+        let info = broadcast_shapes(self.dims(), rhs.dims(), self.strides(), rhs.strides())?;
+
+        let a_view = NDArray::from_parts(
+            self.data.clone(),
+            info.result_shape.clone(),
+            info.a_strides,
+            self.offset,
+        );
+
+        let b_view = NDArray::from_parts(
+            rhs.data.clone(),
+            info.result_shape.clone(),
+            info.b_strides,
+            rhs.offset,
+        );
+
+        let result_data: Vec<T> = a_view.iter().zip(b_view.iter()).map(|(a, b)| *a - *b).collect();
+        Ok(NDArray::new(result_data, info.result_shape))
     }
 
     pub fn try_mul(&self, rhs: &NDArray<T>) -> Result<NDArray<T>, NDArrayError>
     where
         T: Mul<Output = T> + Copy,
     {
-        if self.dims() != rhs.dims() {
-            return Err(NDArrayError::DimensionMismatch {
-                expected: self.dims().to_vec(),
-                found: rhs.dims().to_vec(),
-            });
-        }
-        let result_data: Vec<T> = self.iter().zip(rhs.iter()).map(|(a, b)| *a * *b).collect();
-        Ok(NDArray::new(result_data, self.dims().to_vec()))
+        let info = broadcast_shapes(self.dims(), rhs.dims(), self.strides(), rhs.strides())?;
+
+        let a_view = NDArray::from_parts(
+            self.data.clone(),
+            info.result_shape.clone(),
+            info.a_strides,
+            self.offset,
+        );
+
+        let b_view = NDArray::from_parts(
+            rhs.data.clone(),
+            info.result_shape.clone(),
+            info.b_strides,
+            rhs.offset,
+        );
+
+        let result_data: Vec<T> = a_view.iter().zip(b_view.iter()).map(|(a, b)| *a * *b).collect();
+        Ok(NDArray::new(result_data, info.result_shape))
     }
 
     pub fn try_div(&self, rhs: &NDArray<T>) -> Result<NDArray<T>, NDArrayError>
     where
         T: Div<Output = T> + Copy,
     {
-        if self.dims() != rhs.dims() {
-            return Err(NDArrayError::DimensionMismatch {
-                expected: self.dims().to_vec(),
-                found: rhs.dims().to_vec(),
-            });
-        }
-        let result_data: Vec<T> = self.iter().zip(rhs.iter()).map(|(a, b)| *a / *b).collect();
-        Ok(NDArray::new(result_data, self.dims().to_vec()))
+        let info = broadcast_shapes(self.dims(), rhs.dims(), self.strides(), rhs.strides())?;
+
+        let a_view = NDArray::from_parts(
+            self.data.clone(),
+            info.result_shape.clone(),
+            info.a_strides,
+            self.offset,
+        );
+
+        let b_view = NDArray::from_parts(
+            rhs.data.clone(),
+            info.result_shape.clone(),
+            info.b_strides,
+            rhs.offset,
+        );
+
+        let result_data: Vec<T> = a_view.iter().zip(b_view.iter()).map(|(a, b)| *a / *b).collect();
+        Ok(NDArray::new(result_data, info.result_shape))
     }
 
 }

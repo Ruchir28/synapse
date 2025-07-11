@@ -144,58 +144,39 @@ mod tests {
     }
 
     #[test]
-    fn test_add_dimension_mismatch() {
-        let array1 = NDArray::new(vec![1, 2, 3, 4], vec![2, 2]);
-        let array2 = NDArray::new(vec![5, 6, 7, 8], vec![4, 1]);
-        let result = array1.try_add(&array2);
-        assert_eq!(
-            result.unwrap_err(),
-            NDArrayError::DimensionMismatch {
-                expected: vec![2, 2],
-                found: vec![4, 1],
-            }
-        );
+    fn test_add_broadcast_vector() {
+        // Add a vector to each row of a matrix
+        let matrix = NDArray::new(vec![1, 2, 3, 4, 5, 6], vec![3, 2]);
+        let vector = NDArray::new(vec![10, 20], vec![2]);
+        let result = &matrix + &vector;
+
+        let expected_data = vec![11, 22, 13, 24, 15, 26];
+        assert_eq!(result.data().as_ref(), &expected_data);
+        assert_eq!(result.dims(), &[3, 2]);
     }
 
     #[test]
-    fn test_sub_dimension_mismatch() {
-        let array1 = NDArray::new(vec![1, 2, 3, 4], vec![2, 2]);
-        let array2 = NDArray::new(vec![5, 6, 7, 8], vec![4, 1]);
-        let result = array1.try_sub(&array2);
-        assert_eq!(
-            result.unwrap_err(),
-            NDArrayError::DimensionMismatch {
-                expected: vec![2, 2],
-                found: vec![4, 1],
-            }
-        );
+    fn test_mul_broadcast_scalar() {
+        // Multiply a matrix by a scalar
+        let matrix = NDArray::new(vec![1, 2, 3, 4], vec![2, 2]);
+        let scalar = NDArray::new(vec![10], vec![1]);
+        let result = &matrix * &scalar;
+
+        let expected_data = vec![10, 20, 30, 40];
+        assert_eq!(result.data().as_ref(), &expected_data);
+        assert_eq!(result.dims(), &[2, 2]);
     }
 
     #[test]
-    fn test_mul_dimension_mismatch() {
-        let array1 = NDArray::new(vec![1, 2, 3, 4], vec![2, 2]);
-        let array2 = NDArray::new(vec![5, 6, 7, 8], vec![4, 1]);
-        let result = array1.try_mul(&array2);
-        assert_eq!(
-            result.unwrap_err(),
-            NDArrayError::DimensionMismatch {
-                expected: vec![2, 2],
-                found: vec![4, 1],
-            }
-        );
-    }
+    fn test_add_broadcast_error() {
+        let a = NDArray::new(vec![1, 2, 3], vec![3]);
+        let b = NDArray::new(vec![1, 2, 3, 4], vec![4]);
+        let result = a.try_add(&b);
 
-    #[test]
-    fn test_div_dimension_mismatch() {
-        let array1 = NDArray::new(vec![1, 2, 3, 4], vec![2, 2]);
-        let array2 = NDArray::new(vec![5, 6, 7, 8], vec![4, 1]);
-        let result = array1.try_div(&array2);
+        assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            NDArrayError::DimensionMismatch {
-                expected: vec![2, 2],
-                found: vec![4, 1],
-            }
+            NDArrayError::BroadcastError(vec![3], vec![4])
         );
     }
 }

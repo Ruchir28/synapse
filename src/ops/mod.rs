@@ -3,6 +3,7 @@ pub mod dot;
 pub mod reduction;
 pub mod transform;
 pub mod slice;
+pub mod broadcast;
 
 // Re-export the traits
 pub use reduction::ReductionOps;
