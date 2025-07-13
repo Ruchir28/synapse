@@ -25,7 +25,7 @@ impl<T> Clone for NDArray<T> {
 
 impl<T> NDArray<T> {
     pub fn new(data: Vec<T>, dims: Vec<usize>) -> Self {
-        if data.len() != dims.iter().product() {
+        if data.len() != dims.iter().product::<usize>() {
             panic!("Data length does not match dimensions");
         }
 

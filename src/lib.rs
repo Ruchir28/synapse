@@ -6,6 +6,9 @@ pub use error::NDArrayError;
 pub use ndarray::NDArray;
 pub use ops::*;
 
+#[cfg(feature = "python")]
+pub mod bindings;
+
 #[cfg(test)]
 mod integration_tests {
     use crate::ndarray::NDArray;

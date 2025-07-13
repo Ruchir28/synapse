@@ -1,2 +1,5 @@
 /target
 src/.DS_Store
+.venv*
+settings.json
+todo.md

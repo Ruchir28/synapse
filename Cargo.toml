@@ -4,3 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+pyo3 = { version = "0.25.1", optional = true }
+
+[lib]
+name = "synapse"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["python"]
+python = ["pyo3/extension-module"]
