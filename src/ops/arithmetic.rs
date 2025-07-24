@@ -3,7 +3,7 @@ use std::ops::{Add, Div, Mul, Sub};
 
 impl<'a, 'b, T> Add<&'b NDArray<T>> for &'a NDArray<T>
 where
-    T: Add<Output = T> + Copy,
+    T: Add<Output = T> + Copy + Default + 'static,
 {
     type Output = NDArray<T>;
 

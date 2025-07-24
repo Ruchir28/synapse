@@ -1,6 +1,7 @@
 use crate::{ops::broadcast::broadcast_shapes, NDArrayError};
 use std::ops::{Add, Div, Mul, Sub};
 use std::sync::Arc;
+use std::borrow::Cow;
 
 #[derive(Debug)]
 pub struct NDArray<T> {
@@ -147,6 +148,7 @@ impl<T> NDArray<T> {
             offset,
         }
     }
+    
     pub fn is_contiguous(&self) -> bool {
         if self.offset != 0 {
             return false;
@@ -173,8 +175,36 @@ impl<T> NDArray<T> {
 
     pub fn try_add(&self, rhs: &NDArray<T>) -> Result<NDArray<T>, NDArrayError>
     where
-        T: Add<Output = T> + Copy,
+        T: Add<Output = T> + Copy + Default + 'static,
     {
+        // SIMD fast path for aarch64
+        #[cfg(target_arch = "aarch64")]
+        if self.dims == rhs.dims && std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
+            let self_contig = if self.is_contiguous() { Cow::Borrowed(self) } else { Cow::Owned(self.to_contiguous()) };
+            let other_contig = if rhs.is_contiguous() { Cow::Borrowed(rhs) } else { Cow::Owned(rhs.to_contiguous()) };
+
+            let num_elements = self.dims().iter().product();
+            let mut result = NDArray::new(vec![T::default(); num_elements], self.dims.clone());
+
+            unsafe {
+                let a_slice: &[f32] = std::mem::transmute(self_contig.data().as_ref() as &[T]);
+                let b_slice: &[f32] = std::mem::transmute(other_contig.data().as_ref() as &[T]);
+                let r_slice: &mut [f32] = std::mem::transmute(result.data_mut() as &mut [T]);
+
+                crate::ops::arch::aarch64::add_f32_neon(a_slice, b_slice, r_slice);
+            }
+
+            return Ok(result);
+        }
+
+        self.fallback_add(rhs)
+    }
+
+    pub fn fallback_add(&self, rhs: &NDArray<T>) -> Result<NDArray<T>, NDArrayError>
+    where
+       T: Add<Output = T> + Copy + Default + 'static,
+    {
+        // Fallback for other architectures or types
         let info = broadcast_shapes(self.dims(), rhs.dims(), self.strides(), rhs.strides())?;
 
         let a_view = NDArray::from_parts(
@@ -404,5 +434,20 @@ fn test_to_contiguous_from_slice() {
         // Check that getting an element from the new array works
         assert_eq!(contiguous_view.get(&[0, 0]), Some(&6));
         assert_eq!(contiguous_view.get(&[2, 2]), Some(&18));
+    }
+
+    #[test]
+    fn test_add_f32_simd_path() {
+        // This test is designed to trigger the SIMD fast path.
+        // It uses f32, identical shapes, and on a supported CPU, it should use NEON.
+        let a = NDArray::new(vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], vec![3, 3]);
+        let b = NDArray::new(vec![9.0f32, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0], vec![3, 3]);
+
+        // We need to use try_add to match the implementation location
+        let result = a.try_add(&b).unwrap();
+
+        let expected_data: Vec<f32> = vec![10.0; 9];
+        assert_eq!(result.data().as_ref(), &expected_data);
+        assert_eq!(result.dims(), &[3, 3]);
     }
 }

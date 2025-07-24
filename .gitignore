@@ -1,5 +1,8 @@
 /target
-src/.DS_Store
+.DS_Store
 .venv*
 settings.json
 todo.md
+_synapse.cpython*
+__pycache__
+.vscode
