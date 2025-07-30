@@ -24,6 +24,73 @@ pub mod aarch64 {
             i += 1;
         }
     }
+
+    #[target_feature(enable = "neon")]
+    pub unsafe fn multiply_f32_neon(a: &[f32], b: &[f32], result: &mut [f32]) {
+        let len = a.len();
+        let mut i = 0;
+
+        while i + 4 <= len {
+            unsafe {
+                let va = vld1q_f32(a.as_ptr().add(i));
+                let vb = vld1q_f32(b.as_ptr().add(i));
+                let vr = vmulq_f32(va, vb);
+                vst1q_f32(result.as_mut_ptr().add(i), vr);
+            }
+            i += 4;
+        }
+
+        while i < len {
+            result[i] = a[i] * b[i];
+            i += 1;
+        }
+    }
+
+    #[target_feature(enable = "neon")]
+    pub unsafe fn sub_f32_neon(a: &[f32], b: &[f32], result: &mut [f32]) {
+
+        let len = a.len();
+
+        let mut i = 0;
+
+        while i + 4 <= len {
+            unsafe {
+                let va = vld1q_f32(a.as_ptr().add(i));
+                let vb = vld1q_f32(b.as_ptr().add(i));
+                let vr = vsubq_f32(va, vb);
+                vst1q_f32(result.as_mut_ptr().add(i), vr);
+            }
+            i += 4;
+        }
+
+        while i < len {
+            result[i] = a[i] - b[i];
+            i += 1;
+        }
+    }
+
+
+    #[target_feature(enable = "neon")]
+    pub unsafe fn divide_f32_neon(a: &[f32], b: &[f32], result: &mut [f32]) {
+
+        let len = a.len();
+
+        let mut i = 0;
+
+        while i + 4 <= len {
+            unsafe {
+                let va = vld1q_f32(a.as_ptr().add(i));
+                let vb = vld1q_f32(b.as_ptr().add(i));
+                let vr = vdivq_f32(va, vb);
+                vst1q_f32(result.as_mut_ptr().add(i), vr);
+            }
+            i += 4;
+        }
+
+        while i < len {
+            result[i] = a[i] / b[i];
+        }
+    }
 }
 
 

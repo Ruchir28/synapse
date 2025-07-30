@@ -227,7 +227,35 @@ impl<T> NDArray<T> {
 
     pub fn try_sub(&self, rhs: &NDArray<T>) -> Result<NDArray<T>, NDArrayError>
     where
-        T: Sub<Output = T> + Copy,
+        T: Sub<Output = T> + Copy + Default + 'static,
+    {
+        #[cfg(target_arch = "aarch64")]
+        if self.dims == rhs.dims && std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
+            let self_contig = if self.is_contiguous() {Cow::Borrowed(self)} else {Cow::Owned(self.to_contiguous())};
+            let rhs_contig = if rhs.is_contiguous() {Cow::Borrowed(rhs)} else {Cow::Owned(rhs.to_contiguous())};
+
+            let num_elements = self.dims().iter().product();
+
+            let mut result = NDArray::new(vec![T::default();num_elements], self.dims.clone());
+
+            unsafe {
+                let a_slice: &[f32] = std::mem::transmute(self_contig.data().as_ref() as &[T]);
+                let b_slice: &[f32] = std::mem::transmute(rhs_contig.data().as_ref() as &[T]);
+                let r_slice: &mut [f32] = std::mem::transmute(result.data_mut() as &mut [T]);
+
+                crate::ops::arch::aarch64::sub_f32_neon(a_slice, b_slice, r_slice);
+            }
+
+            return Ok(result);
+        } 
+
+        self.fallback_sub(rhs)
+
+    }
+
+    pub fn fallback_sub(&self, rhs: &NDArray<T>) -> Result<NDArray<T>,NDArrayError> 
+    where 
+        T: Sub<Output = T> + Copy + Default + 'static,
     {
         let info = broadcast_shapes(self.dims(), rhs.dims(), self.strides(), rhs.strides())?;
 
@@ -251,7 +279,34 @@ impl<T> NDArray<T> {
 
     pub fn try_mul(&self, rhs: &NDArray<T>) -> Result<NDArray<T>, NDArrayError>
     where
-        T: Mul<Output = T> + Copy,
+        T: Mul<Output = T> + Copy + Default + 'static,
+    {
+
+        #[cfg(target_arch = "aarch64")]
+        if self.dims == rhs.dims && std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
+            let self_contig = if self.is_contiguous() { Cow::Borrowed(self) } else { Cow::Owned(self.to_contiguous()) };
+            let other_contig = if rhs.is_contiguous() { Cow::Borrowed(rhs) } else { Cow::Owned(rhs.to_contiguous()) };
+
+            let num_elements = self.dims().iter().product();
+            let mut result = NDArray::new(vec![T::default(); num_elements], self.dims.clone());
+
+            unsafe {
+                let a_slice: &[f32] = std::mem::transmute(self_contig.data().as_ref() as &[T]);
+                let b_slice: &[f32] = std::mem::transmute(other_contig.data().as_ref() as &[T]);
+                let r_slice: &mut [f32] = std::mem::transmute(result.data_mut() as &mut [T]);
+
+                crate::ops::arch::aarch64::multiply_f32_neon(a_slice, b_slice, r_slice);
+            }
+
+            return Ok(result);
+        }
+
+        self.fallback_mul(rhs)
+    }
+
+    pub fn fallback_mul(&self,rhs: &NDArray<T>) -> Result<NDArray<T>, NDArrayError>
+    where
+        T : Mul<Output = T> + Copy
     {
         let info = broadcast_shapes(self.dims(), rhs.dims(), self.strides(), rhs.strides())?;
 
@@ -275,7 +330,34 @@ impl<T> NDArray<T> {
 
     pub fn try_div(&self, rhs: &NDArray<T>) -> Result<NDArray<T>, NDArrayError>
     where
-        T: Div<Output = T> + Copy,
+        T: Div<Output = T> + Copy + Default + 'static,
+    {
+
+        #[cfg(target_arch = "aarch64")]
+        if self.dims == rhs.dims && std::any::TypeId::of::<T>() == std::any::TypeId::of::<f32>() {
+            let self_contig = if self.is_contiguous() { Cow::Borrowed(self) } else { Cow::Owned(self.to_contiguous()) };
+            let other_contig = if rhs.is_contiguous() { Cow::Borrowed(rhs) } else { Cow::Owned(rhs.to_contiguous()) };
+
+            let num_elements = self.dims().iter().product();
+            let mut result = NDArray::new(vec![T::default(); num_elements], self.dims.clone());
+
+            unsafe {
+                let a_slice: &[f32] = std::mem::transmute(self_contig.data().as_ref() as &[T]);
+                let b_slice: &[f32] = std::mem::transmute(other_contig.data().as_ref() as &[T]);
+                let r_slice: &mut [f32] = std::mem::transmute(result.data_mut() as &mut [T]);
+
+                crate::ops::arch::aarch64::divide_f32_neon(a_slice, b_slice, r_slice);
+            }
+
+            return Ok(result);
+        }
+
+        self.fallback_div(rhs)
+    }
+
+    pub fn fallback_div(&self, rhs: &NDArray<T>) -> Result<NDArray<T>, NDArrayError>
+    where
+        T: Div<Output = T> + Copy + Default + 'static,
     {
         let info = broadcast_shapes(self.dims(), rhs.dims(), self.strides(), rhs.strides())?;
 
@@ -377,20 +459,20 @@ mod tests {
     use crate::ops::{SliceOps, TransformOps};
     use super::*;
 
-#[test]
-fn test_is_contiguous() {
-        let a = NDArray::new(vec![1, 2, 3, 4], vec![2, 2]);
-        assert!(a.is_contiguous());
+    #[test]
+    fn test_is_contiguous() {
+            let a = NDArray::new(vec![1, 2, 3, 4], vec![2, 2]);
+            assert!(a.is_contiguous());
 
-        let b = a.permute_axis(&[1, 0]); // Transpose
-        assert!(!b.is_contiguous());
+            let b = a.permute_axis(&[1, 0]); // Transpose
+            assert!(!b.is_contiguous());
 
-        let c = a.slice(&[0..1, 0..2]); // Slice
-        assert!(!c.is_contiguous());
-    }
+            let c = a.slice(&[0..1, 0..2]); // Slice
+            assert!(!c.is_contiguous());
+        }
 
     #[test]
-fn test_to_contiguous_from_view() {
+    fn test_to_contiguous_from_view() {
         let a = NDArray::new((0..9).collect(), vec![3, 3]);
         let b = a.permute_axis(&[1, 0]); // Transposed view
         assert!(!b.is_contiguous());
@@ -411,30 +493,30 @@ fn test_to_contiguous_from_view() {
     }
 
     #[test]
-fn test_to_contiguous_from_slice() {
-        let array = NDArray::new((0..25).collect(), vec![5, 5]);
-        let view = array.slice(&[1..4, 1..4]); // 3x3 view, offset 6
-        assert!(!view.is_contiguous());
+    fn test_to_contiguous_from_slice() {
+            let array = NDArray::new((0..25).collect(), vec![5, 5]);
+            let view = array.slice(&[1..4, 1..4]); // 3x3 view, offset 6
+            assert!(!view.is_contiguous());
 
-        assert_eq!(view.get(&[0, 0]), Some(&6));
-        assert_eq!(view.get(&[2, 2]), Some(&18));
+            assert_eq!(view.get(&[0, 0]), Some(&6));
+            assert_eq!(view.get(&[2, 2]), Some(&18));
 
-        let contiguous_view = view.to_contiguous();
-        assert!(contiguous_view.is_contiguous());
-        assert_eq!(contiguous_view.dims(), &[3, 3]);
+            let contiguous_view = view.to_contiguous();
+            assert!(contiguous_view.is_contiguous());
+            assert_eq!(contiguous_view.dims(), &[3, 3]);
 
-        // Check the data is now dense
-        let expected_data: Vec<i32> = vec![
-            6, 7, 8,
-            11, 12, 13,
-            16, 17, 18
-        ];
-        assert_eq!(contiguous_view.data().as_ref(), &expected_data);
+            // Check the data is now dense
+            let expected_data: Vec<i32> = vec![
+                6, 7, 8,
+                11, 12, 13,
+                16, 17, 18
+            ];
+            assert_eq!(contiguous_view.data().as_ref(), &expected_data);
 
-        // Check that getting an element from the new array works
-        assert_eq!(contiguous_view.get(&[0, 0]), Some(&6));
-        assert_eq!(contiguous_view.get(&[2, 2]), Some(&18));
-    }
+            // Check that getting an element from the new array works
+            assert_eq!(contiguous_view.get(&[0, 0]), Some(&6));
+            assert_eq!(contiguous_view.get(&[2, 2]), Some(&18));
+        }
 
     #[test]
     fn test_add_f32_simd_path() {

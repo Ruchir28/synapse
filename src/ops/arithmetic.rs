@@ -14,7 +14,7 @@ where
 
 impl<'a, 'b, T> Sub<&'b NDArray<T>> for &'a NDArray<T>
 where
-    T: Sub<Output = T> + Copy,
+    T: Sub<Output = T> + Copy + Default + 'static,
 {
     type Output = NDArray<T>;
 
@@ -26,7 +26,7 @@ where
 
 impl<'a, 'b, T> Mul<&'b NDArray<T>> for &'a NDArray<T>
 where
-    T: Mul<Output = T> + Copy,
+    T: Mul<Output = T> + Copy + Default + 'static,
 {
     type Output = NDArray<T>;
 
@@ -38,7 +38,7 @@ where
 
 impl<'a, 'b, T> Div<&'b NDArray<T>> for &'a NDArray<T>
 where
-    T: Div<Output = T> + Copy,
+    T: Div<Output = T> + Copy + Default + 'static,
 {
     type Output = NDArray<T>;
 
