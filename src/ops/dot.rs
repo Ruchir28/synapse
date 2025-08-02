@@ -1,26 +1,30 @@
 use core::panic;
-use std::iter::Sum;
+use std::{any::TypeId, iter::Sum};
 
-use crate::{NDArray, TransformOps};
+use crate::{ops::arch, NDArray, TransformOps};
 
 pub trait DotOps<T> {
-    fn dot_2d(&self,other: &NDArray<T>) -> NDArray<T>;
-    fn dot(&self,other: &NDArray<T>) -> NDArray<T>;
+    fn dot_2d(&self, other: &NDArray<T>) -> NDArray<T>;
+    fn dot(&self, other: &NDArray<T>) -> NDArray<T>;
+    fn fallback_dot(&self, other: &NDArray<T>) -> NDArray<T>;
 }
-
 
 impl<T> DotOps<T> for NDArray<T>
 where
-    T: Copy + Clone + std::ops::Mul<Output = T> + std::ops::Add<Output = T> + Default + Sum<T>,
+    T: Copy
+        + Clone
+        + std::ops::Mul<Output = T>
+        + std::ops::Add<Output = T>
+        + Default
+        + Sum<T>
+        + 'static,
 {
-    fn dot_2d(&self,other: &NDArray<T>) -> NDArray<T> {
-
+    fn dot_2d(&self, other: &NDArray<T>) -> NDArray<T> {
         let m = self.dims()[0];
         let k1 = self.dims()[1];
 
         let k2 = other.dims()[0];
         let n = other.dims()[1];
-
 
         if k1 != k2 {
             panic!("Dimensions for matrix multiplication are not compatible");
@@ -28,42 +32,61 @@ where
 
         let a_contig = self.to_contiguous();
 
-        // transposing the other to make things faster 
-        let b_transposed = other.permute_axis(&[1,0]).to_contiguous();
+        // transposing the other to make things faster
+        let b_transposed = other.permute_axis(&[1, 0]).to_contiguous();
 
         let a_data = a_contig.data();
 
         let b_data = b_transposed.data();
 
-        
         let result_data = vec![T::default(); m * n];
         let mut result = NDArray::new(result_data, vec![m, n]);
 
+        let type_is_f32 = TypeId::of::<T>() == TypeId::of::<f32>();
+
         for row_a_index in 0..m {
             for row_b_index in 0..n {
-
                 let row_a_start = row_a_index * k1;
                 let row_b_start = row_b_index * k2;
 
                 let row_a_slice = &a_data[row_a_start..row_a_start + k1];
                 let row_b_slice = &b_data[row_b_start..row_b_start + k2];
 
-                let dot_product = row_a_slice.iter()
-                .zip(row_b_slice.iter())
-                .map(|(a,b)| *a * *b)
-                .sum();
+                let mut dot_product = T::default();
 
-                if let Some(val) = result.get_mut(&[row_a_index,row_b_index]) {
+                if type_is_f32 {
+                    #[cfg(target_arch = "aarch64")]
+                    {
+                        if std::arch::is_aarch64_feature_detected!("neon") {
+                            unsafe {
+                                let a_slice = &*(row_a_slice as *const [T] as *const [f32]);
+                                let b_slice = &*(row_b_slice as *const [T] as *const [f32]);
+                                dot_product =
+                                    *(&arch::aarch64::dot_f32_neon(a_slice, b_slice) as *const f32
+                                        as *const T);
+                            }
+                        } else {
+                            dot_product = row_a_slice.iter().zip(row_b_slice.iter()).map(|(a, b)| *a * *b).sum();
+                        }
+                    }
+
+                    #[cfg(not(target_arch = "aarch64"))]
+                    {
+                        dot_product = row_a_slice.iter().zip(row_b_slice.iter()).map(|(a, b)| *a * *b).sum();
+                    }
+                } else {
+                    dot_product = row_a_slice.iter().zip(row_b_slice.iter()).map(|(a, b)| *a * *b).sum();
+                }
+
+                if let Some(val) = result.get_mut(&[row_a_index, row_b_index]) {
                     *val = dot_product;
                 }
-                
             }
         }
         result
     }
 
     fn dot(&self, other: &NDArray<T>) -> NDArray<T> {
-
         if self.dims().len() == 2 {
             return self.dot_2d(other);
         }
@@ -119,14 +142,50 @@ where
 
             final_result_array.data_mut()[result_slice_start .. result_slice_start + result_2d_size]
             .copy_from_slice(result_2d.data());
-
         }
         
         final_result_array
-
-
     }
 
+    fn fallback_dot(&self, other: &NDArray<T>) -> NDArray<T> {
+        let m = self.dims()[0];
+        let k1 = self.dims()[1];
+        let k2 = other.dims()[0];
+        let n = other.dims()[1];
+
+        if k1 != k2 {
+            panic!("Dimensions for matrix multiplication are not compatible");
+        }
+
+        let a_contig = self.to_contiguous();
+        let b_transposed = other.permute_axis(&[1, 0]).to_contiguous();
+        let a_data = a_contig.data();
+        let b_data = b_transposed.data();
+
+        let result_data = vec![T::default(); m * n];
+        let mut result = NDArray::new(result_data, vec![m, n]);
+
+        for row_a_index in 0..m {
+            for row_b_index in 0..n {
+                let row_a_start = row_a_index * k1;
+                let row_b_start = row_b_index * k2;
+
+                let row_a_slice = &a_data[row_a_start..row_a_start + k1];
+                let row_b_slice = &b_data[row_b_start..row_b_start + k2];
+
+                let dot_product = row_a_slice
+                    .iter()
+                    .zip(row_b_slice.iter())
+                    .map(|(a, b)| *a * *b)
+                    .sum();
+
+                if let Some(val) = result.get_mut(&[row_a_index, row_b_index]) {
+                    *val = dot_product;
+                }
+            }
+        }
+        result
+    }
 }
 
 #[cfg(test)]
@@ -181,5 +240,21 @@ mod tests {
         ];
     
         assert_eq!(dot_product.data().as_ref(), &expected_data);
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_2d_mul_f32_neon() {
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            let array_1 = NDArray::new(vec![1.0, 2.0, 3.0, 4.0], vec![2, 2]);
+            let array_2 = NDArray::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3]);
+
+            let dot_product = array_1.dot_2d(&array_2);
+
+            let expected_result = vec![9.0, 12.0, 15.0, 19.0, 26.0, 33.0];
+
+            assert_eq!(dot_product.dims(), &vec![2, 3]);
+            assert_eq!(dot_product.data().as_ref(), &expected_result);
+        }
     }
 }

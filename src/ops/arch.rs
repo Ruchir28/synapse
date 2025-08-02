@@ -91,6 +91,36 @@ pub mod aarch64 {
             result[i] = a[i] / b[i];
         }
     }
+
+    #[target_feature(enable = "neon")]
+    pub unsafe fn dot_f32_neon(a: &[f32],b: &[f32]) -> f32 {
+
+        let len = a.len();
+        
+        let mut i = 0;
+
+        let mut final_sum: f32 = 0.0;
+
+        while i + 4 <= len {
+            unsafe {
+                let va = vld1q_f32(a.as_ptr().add(i));
+                let vb = vld1q_f32(b.as_ptr().add(i));
+                let vmul = vmulq_f32(va, vb);
+                let vr = vaddvq_f32(vmul);
+                final_sum += vr;
+            }
+            i += 4;
+        }
+
+        while i < len {
+            final_sum += a[i] * b[i];
+            i += 1;
+        }
+
+        return final_sum;
+
+    }
+    
 }
 
 

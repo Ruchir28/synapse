@@ -1,5 +1,31 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
-use synapse::NDArray;
+use synapse::{NDArray, ops::dot::DotOps};
+
+fn bench_dot(c: &mut Criterion) {
+    let mut group = c.benchmark_group("Dot");
+
+    let shape_a = vec![1024, 1024];
+    let size_a: usize = shape_a.iter().product();
+    let a = NDArray::new((0..size_a).map(|x| x as f32).collect(), shape_a.clone());
+
+    let shape_b = vec![1024, 1024];
+    let size_b: usize = shape_b.iter().product();
+    let b = NDArray::new((0..size_b).map(|x| x as f32).collect(), shape_b.clone());
+
+    group.bench_function(BenchmarkId::new("SIMD", size_a), |bencher| {
+        bencher.iter(|| {
+            let _result = black_box(&a).dot(black_box(&b));
+        })
+    });
+
+    group.bench_function(BenchmarkId::new("Scalar", size_a), |bencher| {
+        bencher.iter(|| {
+            let _result = black_box(&a).fallback_dot(black_box(&b));
+        })
+    });
+
+    group.finish();
+}
 
 fn bench_add(c: &mut Criterion) {
     let mut group = c.benchmark_group("Add");
@@ -20,7 +46,7 @@ fn bench_add(c: &mut Criterion) {
     group.bench_function(BenchmarkId::new("Scalar", size), |bencher| {
         bencher.iter(|| {
             let _result = black_box(&a).fallback_add(black_box(&b));
-        })  
+        })
     });
 
     group.finish();
@@ -101,5 +127,5 @@ fn bench_div(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_add, bench_mul, bench_sub, bench_div);
+criterion_group!(benches, bench_add, bench_mul, bench_sub, bench_div, bench_dot);
 criterion_main!(benches);
