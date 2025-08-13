@@ -2,11 +2,13 @@ use core::panic;
 use std::{any::TypeId, iter::Sum};
 
 use crate::{ops::arch, NDArray, TransformOps};
+use rayon::prelude::*;
 
 pub trait DotOps<T> {
     fn dot_2d(&self, other: &NDArray<T>) -> NDArray<T>;
     fn dot(&self, other: &NDArray<T>) -> NDArray<T>;
     fn fallback_dot(&self, other: &NDArray<T>) -> NDArray<T>;
+    fn dot_2d_tiled(&self, other: &NDArray<T>) -> NDArray<T>;
 }
 
 impl<T> DotOps<T> for NDArray<T>
@@ -17,7 +19,9 @@ where
         + std::ops::Add<Output = T>
         + Default
         + Sum<T>
-        + 'static,
+        + 'static
+        + Send
+        + Sync
 {
     fn dot_2d(&self, other: &NDArray<T>) -> NDArray<T> {
         let m = self.dims()[0];
@@ -83,6 +87,89 @@ where
                 }
             }
         }
+        result
+    }
+
+    fn dot_2d_tiled(&self, other: &NDArray<T>) -> NDArray<T> 
+    where
+     {
+        const TILE_M: usize = 64;
+        const TILE_N: usize = 64;
+
+        let m = self.dims()[0];
+        let k1 = self.dims()[1];
+
+        let k2 = other.dims()[0];
+        let n = other.dims()[1];
+
+        if k1 != k2 {
+            panic!("Dimensions for matrix multiplication are not compatible");
+        }
+
+        let a = self.to_contiguous();
+        let b = other.permute_axis(&[1,0]).to_contiguous(); // TRANSPOSED B
+
+        let a_data: &[T] = a.data();
+        let b_data: &[T] = b.data();
+
+        let mut result = NDArray::new(vec![T::default(); m * n], vec![m, n]);
+
+        let type_is_f32 = TypeId::of::<T>() == TypeId::of::<f32>();
+
+        let c_base = result.data_mut().as_mut_ptr() as usize;
+
+        let m_tiles = (m + TILE_M - 1) / TILE_M;
+        let n_tiles = (n + TILE_N - 1) / TILE_N;
+
+        (0..m_tiles * n_tiles).into_par_iter().for_each(|tile_id| {
+
+            let c_ptr = c_base as *mut T;
+
+            let tile_r: usize = tile_id / n_tiles;
+            let tile_c = tile_id % n_tiles;
+
+            let i0 = tile_r * TILE_M;
+            let i1 = (i0 + TILE_M).min(m);
+
+            let j0 = tile_c * TILE_N;
+            let j1 = (j0 + TILE_N).min(n);
+
+            for i in i0..i1 {
+                for j in j0..j1 {
+
+                    let row_a_slice = &a_data[i * k1 .. i * k1 + k1];
+                    let row_b_slice = &b_data[j * k2 .. j * k2 + k2];
+                    
+                    let mut dot_product = T::default();
+                    
+                    if type_is_f32 {
+                        #[cfg(target_arch = "aarch64")]
+                        {
+                            if std::arch::is_aarch64_feature_detected!("neon") {
+                                unsafe {
+                                    let a_slice = &*(row_a_slice as *const [T] as *const [f32]);
+                                    let b_slice = &*(row_b_slice as *const [T] as *const [f32]);
+                                    let dp = arch::aarch64::dot_f32_neon(a_slice, b_slice);
+                                    dot_product = *(&dp as *const f32 as *const T);
+                                }
+                            } else {
+                                dot_product = row_a_slice.iter().zip(row_b_slice.iter()).map(|(a,b)| *a * *b).sum();
+                            }
+                        }
+                        #[cfg(not(target_arch = "aarch64"))]
+                        {
+                            dot_product = row_a_slice.iter().zip(row_b_slice.iter()).map(|(a,b)| *a * *b).sum();
+                        }
+                    } else {
+                        dot_product = row_a_slice.iter().zip(row_b_slice.iter()).map(|(a,b)| *a * *b).sum();
+                    }
+                    
+                    unsafe { *c_ptr.add(i * n + j) = dot_product; }               
+                }
+            }
+        });
+
+
         result
     }
 
@@ -255,6 +342,64 @@ mod tests {
 
             assert_eq!(dot_product.dims(), &vec![2, 3]);
             assert_eq!(dot_product.data().as_ref(), &expected_result);
+        }
+    }
+
+
+    #[test]
+    fn test_2d_mul_tiled_small_int() {
+        use crate::ops::dot::DotOps;
+
+        // 2x2 · 2x3 (ints)
+        let a = NDArray::new(vec![1,2,3,4], vec![2,2]);
+        let b = NDArray::new(vec![1,2,3,4,5,6], vec![2,3]);
+
+        let baseline = a.dot_2d(&b);
+        let tiled = a.dot_2d_tiled(&b);
+
+        assert_eq!(tiled.dims(), baseline.dims());
+        assert_eq!(tiled.data(), baseline.data());
+    }
+
+    #[test]
+    fn test_2d_mul_tiled_rect_f32() {
+        use crate::ops::dot::DotOps;
+
+        // 7x5 · 5x9 (f32), checks non-multiple of tile sizes
+        let m = 7; let k = 5; let n = 9;
+        let a = NDArray::new((0..m*k).map(|x| (x as f32) * 0.5 + 1.0).collect(), vec![m,k]);
+        let b = NDArray::new((0..k*n).map(|x| (x as f32) * 0.25 - 0.75).collect(), vec![k,n]);
+
+        let baseline = a.dot_2d(&b);
+        let tiled = a.dot_2d_tiled(&b);
+
+        assert_eq!(tiled.dims(), baseline.dims());
+        assert_eq!(tiled.data(), baseline.data());
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_2d_mul_tiled_f32_neon_matches() {
+        use crate::ops::dot::DotOps;
+
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            let m = 31; let k = 37; let n = 23; // odd sizes
+            let a = NDArray::new((0..m*k).map(|x| (x as f32).sin()).collect(), vec![m,k]);
+            let b = NDArray::new((0..k*n).map(|x| (x as f32).cos()).collect(), vec![k,n]);
+
+            let baseline = a.fallback_dot(&b); // pure scalar
+            let tiled = a.dot_2d_tiled(&b);
+
+            assert_eq!(tiled.dims(), baseline.dims());
+            // Allow small FP differences between SIMD and scalar reductions
+            let left = tiled.data();
+            let right = baseline.data();
+            let eps: f32 = 1e-5;
+            for (idx, (l, r)) in left.iter().zip(right.iter()).enumerate() {
+                let diff = (l - r).abs();
+                let tol = eps * (1.0 + l.abs().max(r.abs()));
+                assert!(diff <= tol, "mismatch at {}: left={}, right={}, diff={}, tol={}", idx, l, r, diff, tol);
+            }
         }
     }
 }
