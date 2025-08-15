@@ -9,6 +9,7 @@ pub trait DotOps<T> {
     fn dot(&self, other: &NDArray<T>) -> NDArray<T>;
     fn fallback_dot(&self, other: &NDArray<T>) -> NDArray<T>;
     fn dot_2d_tiled(&self, other: &NDArray<T>) -> NDArray<T>;
+    fn dot_2d_tiled_kblocked(&self, other: &NDArray<T>) -> NDArray<T>;
 }
 
 impl<T> DotOps<T> for NDArray<T>
@@ -90,8 +91,7 @@ where
         result
     }
 
-    fn dot_2d_tiled(&self, other: &NDArray<T>) -> NDArray<T> 
-    where
+    fn dot_2d_tiled(&self, other: &NDArray<T>) -> NDArray<T>
      {
         const TILE_M: usize = 64;
         const TILE_N: usize = 64;
@@ -172,6 +172,145 @@ where
 
         result
     }
+
+    
+    fn dot_2d_tiled_kblocked(&self, other: &NDArray<T>) -> NDArray<T> {
+        const TILE_M: usize = 64;
+        const TILE_N: usize = 64;
+        const TILE_K: usize = 64;
+
+        let m = self.dims()[0];
+        let k1 = self.dims()[1];
+
+        let k2 = other.dims()[0];
+        let n = other.dims()[1];
+
+        if k1 != k2 {
+            panic!("Dimensions for matrix multiplication are not compatible");
+        }
+
+        let a = self.to_contiguous();
+        let b = other.permute_axis(&[1,0]).to_contiguous(); // TRANSPOSED B
+
+        let a_data: &[T] = a.data();
+        let b_data: &[T] = b.data();
+
+        let mut result = NDArray::new(vec![T::default(); m * n], vec![m, n]);
+
+        let type_is_f32 = TypeId::of::<T>() == TypeId::of::<f32>();
+
+        let c_base = result.data_mut().as_mut_ptr() as usize;
+
+        let m_tiles = (m + TILE_M - 1) / TILE_M;
+        let n_tiles = (n + TILE_N - 1) / TILE_N;
+
+        (0..m_tiles * n_tiles).into_par_iter().for_each(|tile_id| {
+
+            let c_ptr = c_base as *mut T;
+
+            let tile_r: usize = tile_id / n_tiles;
+            let tile_c = tile_id % n_tiles;
+
+            let i0 = tile_r * TILE_M;
+            let i1 = (i0 + TILE_M).min(m);
+
+            let j0 = tile_c * TILE_N;
+            let j1 = (j0 + TILE_N).min(n);
+
+            let tile_h = i1 - i0;
+            let tile_w = j1 - j0;
+
+            const MR: usize = 4;  // Process 4 rows of C at once
+            const NR: usize = 8;  // Process 8 cols of C at once
+
+            let mut c_tile = vec![T::default(); tile_h * tile_w];
+
+            let mut k_block_start = 0;
+            while k_block_start < k1 {
+                let k_block_end = (k_block_start + TILE_K).min(k1);
+                let _k_block_size = k_block_end - k_block_start;
+
+                for i_micro in (0..tile_h).step_by(MR) {
+                    for j_micro in (0..tile_w).step_by(NR) {
+                        let i_end = (i_micro + MR).min(tile_h);
+                        let j_end = (j_micro + NR).min(tile_w);
+
+                        let mut a_micro_rows: [&[T]; MR] = [&[]; MR];
+                        let mut b_micro_rows: [&[T]; NR] = [&[]; NR];
+
+                        for i_local in 0..(i_end - i_micro) {
+                            let global_row = i0 + i_micro + i_local;
+                            let a_row_slice = &a_data[global_row * k1 + k_block_start..global_row * k1 + k_block_end];
+                            a_micro_rows[i_local] = a_row_slice;
+                        }
+
+                        for j_local in 0..(j_end - j_micro) {
+                            let global_col = j0 + j_micro + j_local;
+                            let b_row_slice = &b_data[global_col * k1 + k_block_start..global_col * k1 + k_block_end];
+                            b_micro_rows[j_local] = b_row_slice;
+                        }
+
+                        let actual_mr = i_end - i_micro;
+                        let actual_nr = j_end - j_micro;
+                        
+                        for i_local in 0..actual_mr {
+                            for j_local in 0..actual_nr {
+                                let a_row = a_micro_rows[i_local];
+                                let b_row = b_micro_rows[j_local];
+                                
+                                let mut dot_product = T::default();
+                                
+                                if type_is_f32 {
+                                    #[cfg(target_arch = "aarch64")]
+                                    {
+                                        if std::arch::is_aarch64_feature_detected!("neon") {
+                                            unsafe {
+                                                let a_slice = &*(a_row as *const [T] as *const [f32]);
+                                                let b_slice = &*(b_row as *const [T] as *const [f32]);
+                                                let dp = arch::aarch64::dot_f32_neon(a_slice, b_slice);
+                                                dot_product = *(&dp as *const f32 as *const T);
+                                            }
+                                        } else {
+                                            dot_product = a_row.iter().zip(b_row.iter()).map(|(a, b)| *a * *b).sum();
+                                        }
+                                    }
+                                    #[cfg(not(target_arch = "aarch64"))]
+                                    {
+                                        dot_product = a_row.iter().zip(b_row.iter()).map(|(a, b)| *a * *b).sum();
+                                    }
+                                } else {
+                                    dot_product = a_row.iter().zip(b_row.iter()).map(|(a, b)| *a * *b).sum();
+                                }
+
+                                // Update c_tile with correct indexing
+                                let c_tile_row = i_micro + i_local;
+                                let c_tile_col = j_micro + j_local;
+                                let c_idx = c_tile_row * tile_w + c_tile_col;
+                                c_tile[c_idx] = c_tile[c_idx] + dot_product;
+                            }
+                        }
+                        
+                    }
+                }
+                k_block_start = k_block_end;
+            }
+
+            unsafe  {
+                for r_local in 0..tile_h {
+                    let src = &c_tile[r_local * tile_w .. (r_local + 1) * tile_w];
+                    let dst_row = i0 + r_local;
+                    let dst = c_ptr.add(dst_row * n + j0);
+                    std::ptr::copy_nonoverlapping(src.as_ptr(), dst, tile_w);
+                }
+
+            }
+        });
+
+        result
+
+    }
+
+
 
     fn dot(&self, other: &NDArray<T>) -> NDArray<T> {
         if self.dims().len() == 2 {
@@ -296,6 +435,73 @@ mod tests {
 
     }
 
+    #[test]
+    fn test_2d_mul_tiled_kblocked_small_int() {
+        use crate::ops::dot::DotOps;
+
+        // 2x2 · 2x3 (ints)
+        let a = NDArray::new(vec![1, 2, 3, 4], vec![2, 2]);
+        let b = NDArray::new(vec![1, 2, 3, 4, 5, 6], vec![2, 3]);
+
+        let baseline = a.dot_2d(&b);
+        let tiled_k = a.dot_2d_tiled_kblocked(&b);
+
+        assert_eq!(tiled_k.dims(), baseline.dims());
+        assert_eq!(tiled_k.data(), baseline.data());
+    }
+
+    #[test]
+    fn test_2d_mul_tiled_kblocked_rect_f32() {
+        use crate::ops::dot::DotOps;
+
+        // Non-multiple tile sizes to exercise edge paths
+        let m = 7; let k = 5; let n = 9;
+        let a = NDArray::new((0..m*k).map(|x| (x as f32) * 0.5 + 1.0).collect(), vec![m, k]);
+        let b = NDArray::new((0..k*n).map(|x| (x as f32) * 0.25 - 0.75).collect(), vec![k, n]);
+
+        // Use scalar fallback as a stable reference
+        let baseline = a.fallback_dot(&b);
+        let tiled_k = a.dot_2d_tiled_kblocked(&b);
+
+        assert_eq!(tiled_k.dims(), baseline.dims());
+
+        // Allow small FP differences due to K-block accumulation order
+        let left = tiled_k.data();
+        let right = baseline.data();
+        let eps: f32 = 1e-5;
+        for (idx, (l, r)) in left.iter().zip(right.iter()).enumerate() {
+            let diff = (l - r).abs();
+            let tol = eps * (1.0 + l.abs().max(r.abs()));
+            assert!(diff <= tol, "mismatch at {}: left={}, right={}, diff={}, tol={}", idx, l, r, diff, tol);
+        }
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn test_2d_mul_tiled_kblocked_f32_neon_matches() {
+        use crate::ops::dot::DotOps;
+
+        if std::arch::is_aarch64_feature_detected!("neon") {
+            let m = 31; let k = 37; let n = 23; // odd sizes
+            let a = NDArray::new((0..m*k).map(|x| (x as f32).sin()).collect(), vec![m,k]);
+            let b = NDArray::new((0..k*n).map(|x| (x as f32).cos()).collect(), vec![k,n]);
+
+            let baseline = a.fallback_dot(&b); // pure scalar
+            let tiled_k = a.dot_2d_tiled_kblocked(&b);
+
+            assert_eq!(tiled_k.dims(), baseline.dims());
+            // Allow small FP differences between different reduction orders
+            let left = tiled_k.data();
+            let right = baseline.data();
+            let eps: f32 = 1e-5;
+            for (idx, (l, r)) in left.iter().zip(right.iter()).enumerate() {
+                let diff = (l - r).abs();
+                let tol = eps * (1.0 + l.abs().max(r.abs()));
+                assert!(diff <= tol, "mismatch at {}: left={}, right={}, diff={}, tol={}", idx, l, r, diff, tol);
+            }
+
+        }
+    }
     #[test]
     fn test_3d_mul() {
         // a: shape [2, 2, 3]
