@@ -232,66 +232,116 @@ where
 
                 for i_micro in (0..tile_h).step_by(MR) {
                     for j_micro in (0..tile_w).step_by(NR) {
+
                         let i_end = (i_micro + MR).min(tile_h);
                         let j_end = (j_micro + NR).min(tile_w);
-
-                        let mut a_micro_rows: [&[T]; MR] = [&[]; MR];
-                        let mut b_micro_rows: [&[T]; NR] = [&[]; NR];
-
-                        for i_local in 0..(i_end - i_micro) {
-                            let global_row = i0 + i_micro + i_local;
-                            let a_row_slice = &a_data[global_row * k1 + k_block_start..global_row * k1 + k_block_end];
-                            a_micro_rows[i_local] = a_row_slice;
-                        }
-
-                        for j_local in 0..(j_end - j_micro) {
-                            let global_col = j0 + j_micro + j_local;
-                            let b_row_slice = &b_data[global_col * k1 + k_block_start..global_col * k1 + k_block_end];
-                            b_micro_rows[j_local] = b_row_slice;
-                        }
 
                         let actual_mr = i_end - i_micro;
                         let actual_nr = j_end - j_micro;
                         
-                        for i_local in 0..actual_mr {
-                            for j_local in 0..actual_nr {
-                                let a_row = a_micro_rows[i_local];
-                                let b_row = b_micro_rows[j_local];
-                                
-                                let mut dot_product = T::default();
-                                
-                                if type_is_f32 {
-                                    #[cfg(target_arch = "aarch64")]
-                                    {
-                                        if std::arch::is_aarch64_feature_detected!("neon") {
-                                            unsafe {
-                                                let a_slice = &*(a_row as *const [T] as *const [f32]);
-                                                let b_slice = &*(b_row as *const [T] as *const [f32]);
-                                                let dp = arch::aarch64::dot_f32_neon(a_slice, b_slice);
-                                                dot_product = *(&dp as *const f32 as *const T);
-                                            }
-                                        } else {
-                                            dot_product = a_row.iter().zip(b_row.iter()).map(|(a, b)| *a * *b).sum();
-                                        }
+                        let mut c_micro_reg = [[T::default(); NR]; MR]; 
+
+                        // SIMD fast path for f32 on aarch64 NEON when the micro-tile is full size MR x NR
+                        #[cfg(target_arch = "aarch64")]
+                        let simd_taken = if type_is_f32
+                            && std::arch::is_aarch64_feature_detected!("neon")
+                            && actual_mr == MR
+                            && actual_nr == NR
+                        {
+                            unsafe {
+                                use std::arch::aarch64::{vdupq_n_f32, vfmaq_f32, vld1q_f32, vst1q_f32, float32x4_t};
+
+                                let mut c0: [float32x4_t; MR] = [vdupq_n_f32(0.0); MR];
+                                let mut c1: [float32x4_t; MR] = [vdupq_n_f32(0.0); MR];
+
+                                for k_micro in k_block_start..k_block_end {
+                                    let mut a_micro_reg = [T::default(); MR];
+                                    for i_kernel in 0..MR {
+                                        let global_row_index = i0 + i_micro + i_kernel;
+                                        let a_value = a_data[global_row_index * k1 + k_micro];
+                                        a_micro_reg[i_kernel] = a_value;
                                     }
-                                    #[cfg(not(target_arch = "aarch64"))]
-                                    {
-                                        dot_product = a_row.iter().zip(b_row.iter()).map(|(a, b)| *a * *b).sum();
+
+                                    let mut b_micro_reg = [T::default(); NR];
+                                    for j_kernel in 0..NR {
+                                        let global_row_index = j0 + j_micro + j_kernel; // row in B^T is output col idx
+                                        let b_value = b_data[global_row_index * k2 + k_micro];
+                                        b_micro_reg[j_kernel] = b_value;
                                     }
-                                } else {
-                                    dot_product = a_row.iter().zip(b_row.iter()).map(|(a, b)| *a * *b).sum();
+
+                                    let b0 = vld1q_f32(b_micro_reg.as_ptr() as *const f32);
+                                    let b1 = vld1q_f32(b_micro_reg.as_ptr().add(4) as *const f32);
+
+                                    for i_kernel in 0..MR {
+                                        let a_scalar: f32 = *(&a_micro_reg[i_kernel] as *const T as *const f32);
+                                        let a_bcast = vdupq_n_f32(a_scalar);
+                                        c0[i_kernel] = vfmaq_f32(c0[i_kernel], b0, a_bcast);
+                                        c1[i_kernel] = vfmaq_f32(c1[i_kernel], b1, a_bcast);
+                                    }
                                 }
 
-                                // Update c_tile with correct indexing
+                                for i_kernel in 0..MR {
+                                    let mut tmp0 = [0f32; 4];
+                                    let mut tmp1 = [0f32; 4];
+                                    vst1q_f32(tmp0.as_mut_ptr(), c0[i_kernel]);
+                                    vst1q_f32(tmp1.as_mut_ptr(), c1[i_kernel]);
+                                    for j in 0..4 {
+                                        let val_t: T = *(&tmp0[j] as *const f32 as *const T);
+                                        c_micro_reg[i_kernel][j] = c_micro_reg[i_kernel][j] + val_t;
+                                    }
+                                    for j in 0..4 {
+                                        let val_t: T = *(&tmp1[j] as *const f32 as *const T);
+                                        c_micro_reg[i_kernel][4 + j] = c_micro_reg[i_kernel][4 + j] + val_t;
+                                    }
+                                }
+                            }
+                            true
+                        } else {
+                            false
+                        };
+                        #[cfg(not(target_arch = "aarch64"))]
+                        let simd_taken = false;
+
+                        if !simd_taken {
+                            for k_micro in k_block_start..k_block_end {
+                                // Load A panel (MR x 1)
+                                let mut a_micro_reg = [T::default(); MR];
+                                for i_kernel in 0..actual_mr {
+                                    let global_row_index = i0 + i_micro + i_kernel;
+                                    let a_value = a_data[global_row_index * k1 + k_micro];
+                                    a_micro_reg[i_kernel] = a_value;
+                                }
+
+                                let mut b_micro_reg = [T::default(); NR];
+                                for j_kernel in 0..actual_nr {
+                                    let global_row_index = j0 + j_micro + j_kernel; // row in B^T
+                                    let b_value = b_data[global_row_index * k2 + k_micro];
+                                    b_micro_reg[j_kernel] = b_value;
+                                }
+
+                                for i_kernel in 0..actual_mr {
+                                    for j_kernel in 0..actual_nr {
+                                        let a_value = a_micro_reg[i_kernel];
+                                        let b_value = b_micro_reg[j_kernel];
+                                        c_micro_reg[i_kernel][j_kernel] =
+                                            c_micro_reg[i_kernel][j_kernel] + a_value * b_value;
+                                    }
+                                }
+                            }
+                        }
+
+                        for i_local in 0..actual_mr {
+                            for j_local in 0..actual_nr {
                                 let c_tile_row = i_micro + i_local;
                                 let c_tile_col = j_micro + j_local;
                                 let c_idx = c_tile_row * tile_w + c_tile_col;
-                                c_tile[c_idx] = c_tile[c_idx] + dot_product;
+                                c_tile[c_idx] = c_tile[c_idx] + c_micro_reg[i_local][j_local];
                             }
                         }
-                        
+
                     }
                 }
+                
                 k_block_start = k_block_end;
             }
 
@@ -609,3 +659,4 @@ mod tests {
         }
     }
 }
+
