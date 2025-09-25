@@ -18,7 +18,14 @@ fn bench_dot(c: &mut Criterion) {
         })
     });
 
-    group.bench_function(BenchmarkId::new("Scalar", size_a), |bencher| {
+    // New: tiled 2D dot with SIMD inner path for f32
+    group.bench_function(BenchmarkId::new("Tiled: Multi Threading + SIMD", size_a), |bencher| {
+        bencher.iter(|| {
+            let _result = black_box(&a).dot_2d_tiled(black_box(&b));
+        })
+    });
+
+    group.bench_function(BenchmarkId::new("Scalar_fallback", size_a), |bencher| {
         bencher.iter(|| {
             let _result = black_box(&a).fallback_dot(black_box(&b));
         })
